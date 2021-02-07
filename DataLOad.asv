@@ -1,0 +1,214 @@
+close all
+Vector = cell(10,1);
+addpath('C:\Users\jarra\Desktop\DSC')
+
+
+fold = dir;
+DOCfrac = 0.999;
+%% Open Folder
+for f = 1:1:length(fold)
+   if strcmp(fold(f).name,'.') == 1 || strcmp(fold(f).name,'..') == 1
+   elseif fold(f).isdir == 0 %Exclude nondirectories
+   else
+       cd(fold(f).name)
+       cd('.\matlab')
+       %% Load File
+       datafile = dir;
+       for d = 1:1:length(datafile)
+            if strcmp(datafile(d).name,'.') == 1 || strcmp(datafile(d).name,'..') == 1
+            %elseif datafile(d).isdir == 0 %Exclude nondirectories
+            else
+            fileID = fopen(datafile(d).name);
+            S = textscan(fileID,'%f %f %f','HeaderLines',67);
+            fclose(fileID);
+            
+            % S is a cell array with | 1 time | 2 temp | 3 heatflow |
+            
+            %% Extract polymerisation cycle
+            % This is the isotherm, so create a vector where only T =
+            % Tiso(+/- 1)
+            str = datafile(d).name(1:3);
+            str2 = datafile(d).name(5);
+            Rn = str2double(str2);
+            Ti = str2double(str); % Isotherm temperature
+            clear str str2
+            
+            t = S{1}(:);
+            T = S{2}(:);
+            heatFlow = S{3}(:);
+            
+            logicTi = abs(T-Ti) <= 0.6; %logical expression for data points when T = isothermal T
+            tRxn = t(logicTi);
+            TRxn = T(logicTi);
+            heatFlowRxn = heatFlow(logicTi);
+            
+           % IsoPoly{f,d} = [tRxn TRxn heatFlowRxn];
+            
+            %% Extract melting peak
+            % Only consider Tiso+10 and onwards
+            logicTm = (T >= 180); % higher than 190 degree data samples might have 
+            % trouble with this line
+            
+            Tm = T(logicTm);
+            I = find(Tm >= 270,1);
+            Tm = Tm(1:I);
+            
+            tm = t(logicTm);
+            tm = tm(1:I);
+            
+            heatFlowm = heatFlow(logicTm);
+            heatFlowm = heatFlowm(1:I);
+            
+            
+            %% Integrate melt peak area
+            % this algorithm could be refined.
+            x = Tm; %linear section first
+            y = -heatFlowm; %make peak up
+
+            
+            xlin1 = x(x >= 240);
+            ylin1 = y(x >= 240);
+            
+            xlin2 = x(x <= 195);
+            ylin2 = y(x <= 195);
+            
+            ylin = [ylin1; ylin2];
+            xlin = [xlin1; xlin2];
+            
+            Xlin = [ones(length(xlin),1) xlin];
+            B = Xlin\ylin; %baseline gradient/intercept
+            
+            yline = B(2).*x+B(1);
+            
+            Iy = cumtrapz(y);
+            Iyb = cumtrapz(yline);
+            IybVAL = trapz(x,y)-trapz(x,yline); %need to fix these units !! integral of T (in C) and Q (in W/g) = JC/gs; @ 10 C/min
+            Hmelt = IybVAL;    %J.K./g.s % 10 K / 60 s
+            Hmelt = Hmelt*6; % J/g
+%             clear t T heatFlow
+%             clear tRxn TRxn heatFlowRxn
+            %% Get The Curve
+%             tRxn = t(logicTi);
+%             TRxn = T(logicTi);
+%             heatFlowRxn = heatFlow(logicTi);
+
+            tRxnBL = tRxn(tRxn <= 43 & tRxn >= 42.5);
+            heatFlowRxnBL = heatFlowRxn(tRxn <= 43 & tRxn >= 42.5);
+            tRxnBL2 = [ones(length(tRxnBL),1) tRxnBL];
+            B = tRxnBL2\heatFlowRxnBL; %baseline gradient/intercept
+            
+            heatFlowRxnBLine = B(2).*tRxn+B(1);
+            
+            heatFlowRxn = heatFlowRxn - heatFlowRxnBLine;
+            heatFlowRxn = heatFlowRxn(heatFlowRxn >= 0);
+            tRxn = tRxn(heatFlowRxn >= 0);
+            
+%             figure(10)
+%             hold on
+%             plot(tRxn(1:end-20),heatFlowRxn(1:end-20))
+            
+            
+            %% Data Process
+            x = tRxn(1:end-20);
+            y = heatFlowRxn(1:end-20);
+            
+            format short g  
+            func = @(k)sum((k(1)*(exp(-(x-k(2)).^2/(2*k(3)^2)).*(x<=k(2))+exp(-(x-k(2)).^2/(2*k(4)^2)).*(x>k(2)))+...  
+            k(5)*(exp(-(x-k(6)).^2/(2*k(7)^2)).*(x<=k(6))+exp(-(x-k(6)).^2/(2*k(8)^2)).*(x>k(6)))-y).^2);            
+          
+
+            k0 = [0.23 11 1 1 0.3 12 1 1];  
+%             k0 = [0.6 11.538       2695.7       5088.8      0.48506           14 3160 0.5];
+            % 
+            Kmin= [0 10.5 0.85 0.75 0 14 0.5 0.5];
+            Kmax= [0.6 12 inf inf inf 14 inf inf];
+
+            k = fmincon(func,k0,[],[],[],[],[],[],@(k)CONSTRAIN(x,k,Hmelt)); % I can get goodness of fit indicators from here...
+            %k = fmincon(f,k0,[],[],[],[],[],[],@ys); 
+
+            f1c = k(1)*(exp(-(x-k(2)).^2/(2*k(3)^2)).*(x<=k(2))+exp(-(x-k(2)).^2/(2*k(4)^2)).*(x>k(2)));  
+            f2c = k(5)*(exp(-(x-k(6)).^2/(2*k(7)^2)).*(x<=k(6))+exp(-(x-k(6)).^2/(2*k(8)^2)).*(x>k(6)));  
+            
+            %% plot & parameters
+            
+            hold on
+            plot(x,f1c)
+            plot(x,f2c)
+            plot(x,f1c+f2c)
+            plot(x(1:25:length(x)),y(1:25:length(x)),'o')
+%             str = strcat(fold(f1).name,'\_',fold2(f2).name);
+%             title(str);
+            clear str
+            hold off
+
+%             a1=k(1);
+%             b1=k(2);
+%             c11=k(3);
+%             c12=k(4);
+% 
+%             a2=k(5);
+%             b2=k(6);
+%             c21=k(7);
+%             c22=k(8);
+
+%             %monomer conversion
+%             mc=trapz(x,f1c);
+%             mct=cumtrapz(x,f1c);
+%             DOC=DOCfrac*mct/mc;
+
+%             Y1=diff(DOC)./diff(60*x);
+%             Y=[Y1;0];
+
+%             cry=trapz(x,f2c);
+%             cryt=cumtrapz(x,f2c);
+%             C=cryt/cry;
+
+%             Pd = f1c;
+%             Cd = f2c;  
+            Ti = Ti; %isotherm temperature
+            Rn = Rn; %run number
+            
+            Vector{f} = [Vector{f}; Ti Rn k Hmelt]; %Results Matrix
+            
+            %% 
+
+            end
+       end
+       %% Once the above has been finished for the entire folder
+      % Several options... 1 Pick Representative Sample; 2 Average Readable
+      % Data Sets; 3 ...
+      tspan = 0:1/60:40;
+%       legend('-DynamicLegend');
+      for i = 1:length(Vector{f})
+         k = Vector{f}(i,3:10);
+         Ti = Vector{f}(i,1);
+         Rn = Vector{f}(i,2);
+         [func, func1, func2] = SAGauss(tspan,k);
+         if abs(Ti-Tprev) >= 1
+         figure
+         end
+         hold on
+         plot(tspan,func1,'DisplayName',num2str(Rn))
+         str = num2str(Ti);
+         str2 = num2str(f);
+         str = [str ' ' str2];
+         title(str)
+         legend
+         Tprev = Ti;
+      end
+
+       cd ..
+       %%
+      cd ..
+   end
+end
+
+function [c,ceq] = CONSTRAIN(x,k,Hmelt)
+c = []; 
+
+% Ic = ((2*pi)^0.5)*k(5)*abs(k(7)).*(x<=k(6))+((2*pi)^0.5)*k(5)*abs(k(8)).*(x>k(6));
+% integral of a gaussian is root(2)*a*|c|*sqrt(pi)
+
+If = (quadgk(@(x)k(5)*(exp(-(x-k(6)).^2/(2*k(7)^2)).*(x<=k(6))+exp(-(x-k(6)).^2/(2*k(8)^2)).*(x>k(6))),0,40)); %This number is weird..
+ceq = Hmelt - If*60;  % Hmelt is in J/g; If is the integral of time x heat; W*min/g   |60s/min| 
+end
